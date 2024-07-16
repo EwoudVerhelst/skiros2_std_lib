@@ -4,6 +4,15 @@ from skiros2_common.core.world_element import Element
 from skiros2_common.core.params import ParamTypes
 import rospy
 
+from skiros2_skill.core.skill import SkillBase, SelectorStar,Selector, Serial, State, SerialStar, ParallelFs,ParallelFf
+from skiros2_common.core.primitive import PrimitiveBase
+
+import skiros2_msgs.srv as srvs
+
+import json
+
+
+
 #################################################################################
 # Wait
 #################################################################################
@@ -24,17 +33,23 @@ class wait(PrimitiveBase):
         self.setDescription(Wait(), self.__class__.__name__)
 
     def onPreempt(self):
-        return self.success("Done")
+        return self.step("prempted")
 
     def onStart(self):
-        self.last = rospy.Time.now()
+        self.first = 1
         return True
 
     def execute(self):
+        if self.first == 1:
+            self.first = 2
+            self.last = rospy.Time.now()
+
         duration = rospy.Time.now() - self.last
+        if self.params["Duration"].value == 0.0:
+            return self.fail("The time is 0 sor I return a failure",-1)
         if duration.to_sec() > self.params["Duration"].value:
             return self.success("Done")
-        return self.step("Waiting {}".format(self.params["Duration"].value))
+        return self.step("Waiting {}".format(self.params["Duration"].value)+" "+str(duration.to_sec()))
 
 
 #################################################################################
@@ -62,8 +77,6 @@ class wm_set_relation(PrimitiveBase):
         src = self.params["Src"].value
         relation = self.params["Relation"].value
         dst = self.params["Dst"].value
-        if src == dst:
-            return self.fail("Can not relate {} with itself.".format(src), -1)
         if self.params["RelationState"].value:
             src.setRelation("-1", relation, dst.id)
             dst.setRelation(src.id, relation, "-1")
@@ -145,8 +158,8 @@ class wm_move_object(PrimitiveBase):
     def execute(self):
         start = self.params["StartLocation"].value
         target = self.params["TargetLocation"].value if self.params["TargetLocation"].value.id else start
-        obj = self.params["Object"].value
-        rel = obj.getRelation(pred=self._wmi.get_sub_properties("skiros:spatiallyRelated"), obj="-1")
+        objectt = self.params["Object"].value
+        rel = objectt.getRelation(pred=self._wmi.get_sub_properties("skiros:spatiallyRelated"), obj="-1")
 
         start.setProperty("skiros:ContainerState", "Empty")
         target.setProperty("skiros:ContainerState", "Full")
@@ -154,57 +167,8 @@ class wm_move_object(PrimitiveBase):
         rel["type"] = self.params["Relation"].value
         self._wmi.update_element_properties(start)
         self._wmi.update_element_properties(target)
-        self.params["Object"].value = obj
-        return self.success("{} moved from {} to {}.".format(obj.id, start.id, target.id))
-
-
-class wm_move_and_transform_object(PrimitiveBase):
-    """
-    Instant primitive
-
-    Set Target-Contain-Object on the world model and expresses the transformation in the frame of the target location
-    """
-
-    def createDescription(self):
-        self.setDescription(WmMoveObject(), self.__class__.__name__)
-
-    def onEnd(self):
-        self.params["StartLocation"].unset()
-        return True
-
-    def transform_to_frame(self, element, target_frame):
-        if not element.hasProperty("skiros:FrameId", not_none=True):
-            raise Exception("Missing pose info for target.")
-        reasoner = element._getReasoner("AauSpatialReasoner")
-        reasoner.get_transform(element.getProperty(
-            "skiros:FrameId").value, target_frame)
-        reasoner.transform(element, target_frame)
-        return element
-
-    def execute(self):
-        start = self.params["StartLocation"].value
-        target = self.params["TargetLocation"].value if self.params["TargetLocation"].value.id else start
-        obj = self.params["Object"].value
-        rel = obj.getRelation(pred=self._wmi.get_sub_properties("skiros:spatiallyRelated"), obj="-1")
-
-        start.setProperty("skiros:ContainerState", "Empty")
-        target.setProperty("skiros:ContainerState", "Full")
-        rel["src"] = target.id
-        rel["type"] = self.params["Relation"].value
-
-        if not target.hasProperty("skiros:FrameId", not_none=True):
-            return self.fail("{} has no property 'skiros:FrameId'. Can not transform".format(obj.id), -1)
-        new_parent_frame = target.getProperty("skiros:FrameId").value
-        if not self.transform_to_frame(obj, new_parent_frame):
-            return self.fail("Could not transform {} into parent frame {}.".format(obj.id, new_parent_frame), -2)
-        obj.setProperty("skiros:BaseFrameId", new_parent_frame)
-
-        self._wmi.update_element_properties(start)
-        self._wmi.update_element_properties(target)
-        self._wmi.update_element_properties(obj)
-        self.params["Object"].value = obj
-        return self.success("{} moved from {} to {}.".format(obj.id, start.id, target.id))
-
+        self.params["Object"].value = objectt
+        return self.success("{} moved from {} to {}.".format(objectt.id, start.id, target.id))
 
 #################################################################################
 # Counter
@@ -240,3 +204,215 @@ class counter(PrimitiveBase):
             return self.step(self._print_count())
         else:
             return self.success(self._print_count())
+
+
+
+#################################################################################
+# Any behavior tree execution - through json generated by for example owl-bt
+#################################################################################
+
+
+class AnySkill(SkillDescription):
+    """
+    @brief returns moving until "done"
+    """
+    def createDescription(self):
+        # =======Params=========
+        self.addParam("behaviorTree","owlbt-tree", ParamTypes.Required)
+
+        
+class any_skill(SkillBase):
+    def createDescription(self):
+        self.setDescription(AnySkill(), self.__class__.__name__)
+
+    def expand(self,skill):
+        f = open ("/home/ros/behaviorTree/"+self.params["behaviorTree"].value)
+
+        children_skill = ""
+        bt_json = json.load(f)
+        bt_type = bt_json["type"]
+
+        if bt_type =="ParallelFf" or bt_type == "SerialStar" or bt_type == "ParallelFs" or bt_type=="Selector":
+                        child_processor = bt_type
+                        children = bt_json["childNodes"]
+                        children_skill += self.getChildren(children,child_processor)
+
+
+
+
+        stringSkillBt ="skill("+children_skill+")"
+        print(stringSkillBt)
+        eval(stringSkillBt)
+
+        
+    def getChildren(self,children,processor="SerialStar"):
+        i = 0
+        child_skill = []
+        child_skill_i = 0
+        children_skill = ""
+        while i < len(children):
+
+            node_name = children[i]["type"]
+            
+            # define parameters of skill
+            stringparam = "{ "
+            if "properties" in children[i]:
+                for param in children[i]["properties"]:
+                    try:
+                        param["value"] = float(param["value"])
+                        quotes = ""
+                        stringparam += '"'+param["name"] +'":'+quotes+ str(param["value"]) +""+quotes + ","
+
+                    except ValueError:    
+                        quotes = "\""
+
+            stringparam = stringparam[:-1] # remove last comma
+            stringparam += "}"
+
+            if node_name =="ParallelFf" or node_name == "SerialStar" or node_name == "ParallelFs" or node_name=="Selector":
+                children_skill +=self.getChildren(children=children[i]["childNodes"], processor=node_name)
+
+            else :
+                skill_type = self.getSkillsType(node_name)
+                if (skill_type):
+                    children_skill += 'self.skill("'+skill_type+'", "'+node_name+'",specify='+stringparam+')'
+                else : 
+                    log.error("[behaviortree error]", "the skill type is not known of %s"%node_name)
+
+                    return ""
+                child_skill_i = child_skill_i +1
+
+            #else:
+            #    print("node_name " +node_name+ " is not defined as a skill or a processor")
+                          
+            if i+1 == len(children):
+                skill= " self.skill("+processor+"())("+children_skill+")"
+                return skill
+            else:
+                children_skill += ","
+            i=i+1
+
+
+
+    def getSkillsType(self,skill_implementation):
+        self._get_skills = rospy.ServiceProxy('/infraflex_robot/get_skills', srvs.ResourceGetDescriptions)
+        self._skill_list = dict()
+
+        msg = srvs.ResourceGetDescriptionsRequest()
+        try:
+            resp1 = self._get_skills(msg)
+            res = resp1
+        except rospy.ServiceException as e:
+            log.error("[call]", "Service call failed: %s"%e)
+            return
+        if not res:
+                log.error("[{}]".format(self.__class__.__name__), "Can t retrieve skills.")
+        else:
+            for c in res.list:
+                if c.name == skill_implementation:
+                    return c.type
+
+            return None     
+
+
+#################################################################################
+# Instantiation of owl-bt behavior tree
+#################################################################################
+
+class InstantiateBehaviorTree(SkillDescription):
+    """
+    @brief updates owl-bt.json with the skiros skills
+    """
+    def createDescription(self):
+        # =======Params=========
+        self.addParam("behaviorTreeinit","owl-bt.json", ParamTypes.Required)
+
+class instantiateBehaviorTree(PrimitiveBase):
+    def createDescription(self):
+        self.setDescription(InstantiateBehaviorTree(), self.__class__.__name__)
+
+
+    def onPreempt(self):
+        return self.success("Preempted")
+
+
+    def execute(self):
+       
+        emptypath = "/home/ros/behaviorTree/empty-"+self.params["behaviorTreeinit"].value
+        path = "/home/ros/behaviorTree/"+self.params["behaviorTreeinit"].value
+
+        skirosSkills = self.getSkills()
+        
+        """
+          "name": "wait",
+          "icon": "hourglass-half",
+          "description": "Wait for \"{{Duration}}\" seconds",
+          "isComposite": false,
+          "isPrimitive": true,
+          "skirosname":"wait",
+          "properties": [
+            {
+              "name": "Duration",
+              "default": 0,
+              "type": "number",
+              "min": 0,
+              "max": "10"
+            }
+          ]
+        """
+        with open (emptypath,"r") as jsonFile:
+            data = json.load(jsonFile)
+        
+        for skirosSkill in skirosSkills:
+            owlSkill = dict()
+            owlSkill["name"] = skirosSkill.name
+            owlSkill["icon"] = "hand"
+            owlSkill["description"] = skirosSkill.name 
+            owlSkill["isComposite"] = False
+            owlSkill["isPrimitive"] = True
+            owlSkill["skirosname"] = skirosSkill.type
+
+            owlSkill["properties"]=[]
+            i=0
+            for jsonSkirosParam in skirosSkill.params:
+                owlPropertie=dict()
+                # TODO
+                skirosParam = json.loads(jsonSkirosParam.param) 
+                # example
+                # "{"values": [{"relations": [], "last_update": 0.0, "id": "", "label": "", "type": "sumo:Agent", "properties": {}}], "specType": 2, "type": "skiros_wm::Element", "description": "", "key": "Robot"}"
+                # "{"values": ["owl-bt.json"], "specType": 0, "type": "str", "description": "", "key": "behaviorTreeinit"}"
+                owlPropertie["name"] = skirosParam["key"]
+                owlPropertie["default"] = [] if skirosParam["values"]==[] else skirosParam["values"][0]
+                owlPropertie["type"] = skirosParam["type"] # to be mapped to owl types
+                if owlPropertie["type"] == "number":
+                    owlPropertie["min"] = -1000
+                    owlPropertie["max"] = 1000
+
+                owlSkill["properties"].append(owlPropertie)
+
+            data["nodes"].append(owlSkill)
+
+        # save owl-bt.json
+        with open(path, "w") as jsonFile:
+          json.dump(data, jsonFile)
+
+        return self.success("owl-bt is instantiated")
+
+
+    def getSkills(self):
+        self._get_skills = rospy.ServiceProxy('/infraflex_robot/get_skills', srvs.ResourceGetDescriptions)
+        self._skill_list = dict()
+
+        msg = srvs.ResourceGetDescriptionsRequest()
+        try:
+            resp1 = self._get_skills(msg)
+            res = resp1
+        except rospy.ServiceException as e:
+            log.error("[call]", "Service call failed: %s"%e)
+            return
+        if not res:
+                log.error("[{}]".format(self.__class__.__name__), "Can t retrieve skills.")
+        else:
+            return res.list
+
+ 
