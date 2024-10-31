@@ -191,11 +191,11 @@ class AauSpatialReasoner(DiscreteReasoner):
         """
         now = rospy.Time.now()
         # Prohibits publishing with the same timestamp - triggers warning in noetic
-        if e._last_tf_timestamp == now:
-            return
+        # if e._last_tf_timestamp == now:
+        #     return
         tf = e.getData(":TransformMsg")
         tf.header.stamp = now
-        e._last_tf_timestamp = now
+        # e._last_tf_timestamp = now
         self._tb.sendTransform(tf)
         if e.hasProperty("skiros:PushToFrameId", not_none=True) and not e.hasProperty("skiros:PushToFrameId", ""):
             tf.child_frame_id = e.getProperty("skiros:PushToFrameId").value
@@ -278,7 +278,7 @@ class AauSpatialReasoner(DiscreteReasoner):
         element.setData(":Orientation", self._quaternion_normalize(
             element.getData(":Orientation")))
         element.setProperty("skiros:PublishTf", True)
-        element._last_tf_timestamp = 0
+        # element._last_tf_timestamp = 0
         self._tf_list[element.id] = element
 
     def _unregister(self, element, set_publish_property=True):
